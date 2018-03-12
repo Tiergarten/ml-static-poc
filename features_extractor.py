@@ -37,7 +37,7 @@ def get_features(file_path):
     return data
 
 
-def get_dir_features(dir_path, label, sc, overwrite=False):
+def get_dir_features_rdd(dir_path, label, sc, overwrite=False):
     data = []
     fromPickle = False
 

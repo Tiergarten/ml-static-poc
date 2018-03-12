@@ -84,42 +84,42 @@ def align_training_data(data):
             lambda row: LabeledPoint(row.label, row.features))
 
 
+def get_train_test_split(labelled_rdd, split_n=10):
+    ret = []
+    splits = labelled_rdd.randomSplit([float(1) / split_n] * split_n, seed=int(time.time()))
+    for i in range(0, split_n):
+        test = splits[i]
+
+        train_list = list(splits)
+        train_list.remove(test)
+
+        train_rdd = train_list[0]
+        for train_idx in range(1, len(train_list)):
+            train_rdd.union(train_list[train_idx])
+
+        ret.append((test, train_rdd))
+
+    return ret
+
+
 def main():
-    d = get_dir_features("./benign/", 0.0, sc).union(get_dir_features("./malware/", 1.0, sc))
+    features_from_disk_rdd = get_dir_features_rdd("./benign/", 0.0, sc).union(get_dir_features_rdd("./malware/", 1.0, sc))
     sample_size = 0.1 if len(sys.argv) == 1 else float(sys.argv[1])
     logging.info("Using sample size: %f", sample_size)
 
     if sample_size != 1:
-        i = d.sample(True, sample_size)
-    else:
-        i = d
+        features_from_disk_rdd = features_from_disk_rdd.sample(True, sample_size)
 
-    std = standardise_features(i)
+    standardised_rdd = standardise_features(features_from_disk_rdd)
 
     # Convert to RDD for classifier train function
-    rdd = get_df(add_labels(i, std))
-    stuff = rdd.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
+    rdd = get_df(add_labels(features_from_disk_rdd, standardised_rdd))
+    labelled_rdd = rdd.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
 
     for m in ["svm", "rf"]:
-        # Generate random split for test / train
-        #	test, train = stuff.randomSplit(weights=[0.3, 0.7], seed=int(time.time()))
-
-        # K-folds (n=10)
-        split_n = 10
-        splits = stuff.randomSplit([float(1) / split_n] * split_n, seed=int(time.time()))
         results = []
-        for i in range(0, split_n):
-            test = splits[i]
-
-            train = list(splits)
-            train.remove(test)
-
-            agg_train = train[0]
-            for train_idx in range(1, len(train)):
-                agg_train.union(train[train_idx])
-
-            train = agg_train
-
+        count = 0
+        for test,train in get_train_test_split(labelled_rdd):
             if m == "svm":
                 # {over,under}sample training data so its 50/50 split pos/neg
                 train = align_training_data(train)
@@ -128,14 +128,15 @@ def main():
 
             model_predictions = train_classifier_and_measure(m, train, test)
             iteration_results = ResultStats(m, model_predictions)
-            logging.debug("Fold: %d %s", i, iteration_results)
+            logging.debug("Fold: %d %s", count, iteration_results)
 
             results.append(iteration_results.to_numpy())
+            count += 1
 
         logging.info("[%s] K-Folds avg: %s", m, ResultStats.print_numpy(np.average(results, axis=0)))
 
+
 if __name__ == "__main__":
-    # np.set_printoptions(suppress=True)
     sc = get_sc()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     main()
