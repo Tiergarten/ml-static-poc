@@ -99,3 +99,12 @@ ENV/
 
 # mypy
 .mypy_cache/
+.idea
+benign
+benign-analysed/
+benign_full
+benign_trunc
+malware
+malware-analysed
+malware_full
+malware_trunc
