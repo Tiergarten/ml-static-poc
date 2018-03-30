@@ -12,7 +12,6 @@ benign:
 """
 
 import os
-import yara
 import string
 import pefile
 import re
@@ -36,11 +35,15 @@ from stats import *
 
 
 def standardise_features(labeled_rdd):
+    print labeled_rdd.collect()
+    # Get DenseVector from Rows
     rdd = labeled_rdd.map(lambda row: row[0])
 
     std = StandardScaler()
     model = std.fit(rdd)
+    print rdd.collect()
     features_transform = model.transform(rdd)
+    print features_transform.collect()
     return features_transform
 
 
@@ -103,32 +106,52 @@ def get_train_test_split(labelled_rdd, split_n=10):
 
 
 def main():
+    # Row(features=DenseVector[...], label=0.0)
     features_from_disk_rdd = get_dir_features_rdd("./benign/", 0.0, sc).union(get_dir_features_rdd("./malware/", 1.0, sc))
-    sample_size = 0.1 if len(sys.argv) == 1 else float(sys.argv[1])
+    sample_size = 1
     logging.info("Using sample size: %f", sample_size)
 
     if sample_size != 1:
         features_from_disk_rdd = features_from_disk_rdd.sample(True, sample_size)
 
-    standardised_rdd = standardise_features(features_from_disk_rdd)
+    #standardised_rdd = standardise_features(features_from_disk_rdd)
+    standardised_rdd = features_from_disk_rdd.map(lambda r: r[0])
 
-    # Convert to RDD for classifier train function
-    rdd = get_df(add_labels(features_from_disk_rdd, standardised_rdd))
-    labelled_rdd = rdd.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
+    # Map label, [features] -> LabeledPoint(label, [features])
+    df = get_df(add_labels(features_from_disk_rdd, standardised_rdd))
+    labelled_rdd = df.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
+    #print labelled_rdd.collect()
 
     for m in ["svm", "rf"]:
         results = []
         count = 0
-        for test,train in get_train_test_split(labelled_rdd):
+        for test, train in get_train_test_split(labelled_rdd):
             if m == "svm":
                 # {over,under}sample training data so its 50/50 split pos/neg
                 train = align_training_data(train)
 
             logging.debug("%s", debug_samples(train, test))
 
+            if True:
+                std = StandardScaler()
+                train_features = train.map(lambda lp: lp.features)
+                scale_model = std.fit(train_features)
+                train_features = scale_model.transform(train_features)
+                train = zip(train.map(lambda lp: lp.label).collect(), train_features.collect())
+                df = get_df(train)
+                train = df.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
+                #print 'train: {}'.format(train.collect())
+
+            test_features = test.map(lambda lp: lp.features)
+            test_features = scale_model.transform(test_features)
+            test = zip(test.map(lambda lp: lp.label).collect(), test_features.collect())
+            df = get_df(test)
+            test = df.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
+            #print 'test: {}'.format(test.collect())
+
             model_predictions = train_classifier_and_measure(m, train, test)
             iteration_results = ResultStats(m, model_predictions)
-            logging.debug("Fold: %d %s", count, iteration_results)
+            logging.info("Fold: %d %s", count, iteration_results)
 
             results.append(iteration_results.to_numpy())
             count += 1
