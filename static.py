@@ -34,23 +34,6 @@ from features_extractor import *
 from stats import *
 
 
-def standardise_features(labeled_rdd):
-    print labeled_rdd.collect()
-    # Get DenseVector from Rows
-    rdd = labeled_rdd.map(lambda row: row[0])
-
-    std = StandardScaler()
-    model = std.fit(rdd)
-    print rdd.collect()
-    features_transform = model.transform(rdd)
-    print features_transform.collect()
-    return features_transform
-
-
-def add_labels(labeled, unlabeled):
-    return zip(labeled.map(lambda row: row[1]).collect(), unlabeled.collect())
-
-
 def get_sc():
     return SparkContext("local", "static-poc")
 
@@ -105,58 +88,64 @@ def get_train_test_split(labelled_rdd, split_n=10):
     return ret
 
 
-def main():
+def get_std_scaler(labeledpoints):
+    std = StandardScaler()
+    train_features = labeledpoints.map(lambda lp: lp.features)
+
+    scaler_model = std.fit(train_features)
+    transformed_features = scaler_model.transform(train_features)
+
+    transformed_label_features = \
+        zip(labeledpoints.map(lambda lp: lp.label).collect(), transformed_features.collect())
+
+    return to_labeled_points(transformed_label_features), scaler_model
+
+
+def to_labeled_points(rows):
+    return get_df(rows).rdd.map(lambda row: LabeledPoint(row[0], row[1]))
+
+
+def get_samples(sample_sz=1):
     # Row(features=DenseVector[...], label=0.0)
-    features_from_disk_rdd = get_dir_features_rdd("./benign/", 0.0, sc).union(get_dir_features_rdd("./malware/", 1.0, sc))
-    sample_size = 1
-    logging.info("Using sample size: %f", sample_size)
+    features_from_disk_rdd = get_dir_features_rdd("./benign/", 0.0, sc).union(
+        get_dir_features_rdd("./malware/", 1.0, sc))
 
-    if sample_size != 1:
-        features_from_disk_rdd = features_from_disk_rdd.sample(True, sample_size)
+    logging.info("Using sample size: %f", sample_sz)
+    if sample_sz != 1:
+        features_from_disk_rdd = features_from_disk_rdd.sample(True, sample_sz)
 
-    #standardised_rdd = standardise_features(features_from_disk_rdd)
-    standardised_rdd = features_from_disk_rdd.map(lambda r: r[0])
+    return get_df(features_from_disk_rdd)
 
+def main():
     # Map label, [features] -> LabeledPoint(label, [features])
-    df = get_df(add_labels(features_from_disk_rdd, standardised_rdd))
-    labelled_rdd = df.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
-    #print labelled_rdd.collect()
+    labelled_rdd = get_samples().rdd.map(lambda row: LabeledPoint(row[1], row[0]))
 
     for m in ["svm", "rf"]:
-        results = []
-        count = 0
-        for test, train in get_train_test_split(labelled_rdd):
-            if m == "svm":
-                # {over,under}sample training data so its 50/50 split pos/neg
-                train = align_training_data(train)
+        for scaler in [None, 'std']:
+            results = []
+            count = 0
+            for test, train in get_train_test_split(labelled_rdd):
+                if m == "svm":
+                    # {over,under}sample training data so its 50/50 split pos/neg
+                    train = align_training_data(train)
 
-            logging.debug("%s", debug_samples(train, test))
+                logging.debug("%s", debug_samples(train, test))
 
-            if True:
-                std = StandardScaler()
-                train_features = train.map(lambda lp: lp.features)
-                scale_model = std.fit(train_features)
-                train_features = scale_model.transform(train_features)
-                train = zip(train.map(lambda lp: lp.label).collect(), train_features.collect())
-                df = get_df(train)
-                train = df.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
-                #print 'train: {}'.format(train.collect())
+                if scaler:
+                    train_features, std = get_std_scaler(train)
 
-            test_features = test.map(lambda lp: lp.features)
-            test_features = scale_model.transform(test_features)
-            test = zip(test.map(lambda lp: lp.label).collect(), test_features.collect())
-            df = get_df(test)
-            test = df.rdd.map(lambda row: LabeledPoint(row[0], row[1]))
-            #print 'test: {}'.format(test.collect())
+                    test_features = std.transform(train_features.map(lambda lp: lp.features))
+                    test_label_features = zip(train_features.map(lambda lp: lp.label).collect(), test_features.collect())
+                    test = to_labeled_points(test_label_features)
 
-            model_predictions = train_classifier_and_measure(m, train, test)
-            iteration_results = ResultStats(m, model_predictions)
-            logging.info("Fold: %d %s", count, iteration_results)
+                model_predictions = train_classifier_and_measure(m, train, test)
+                iteration_results = ResultStats(m, model_predictions)
+                logging.info("Fold: %d %s", count, iteration_results)
 
-            results.append(iteration_results.to_numpy())
-            count += 1
+                results.append(iteration_results.to_numpy())
+                count += 1
 
-        logging.info("[%s] K-Folds avg: %s", m, ResultStats.print_numpy(np.average(results, axis=0)))
+            logging.info("[%s] K-Folds avg: %s", '{}-{}'.format(m, scaler), ResultStats.print_numpy(np.average(results, axis=0)))
 
 
 if __name__ == "__main__":
