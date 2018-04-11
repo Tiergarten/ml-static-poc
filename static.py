@@ -81,9 +81,9 @@ def get_train_test_split(labelled_rdd, split_n=10):
 
         train_rdd = train_list[0]
         for train_idx in range(1, len(train_list)):
-            train_rdd.union(train_list[train_idx])
+            train_rdd = train_rdd.union(train_list[train_idx])
 
-        ret.append((test, train_rdd))
+        ret.append((train_rdd, test))
 
     return ret
 

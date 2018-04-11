@@ -3,6 +3,8 @@ from pyspark import SparkContext
 from pyspark.sql.session import SparkSession
 from pyspark.mllib.evaluation import BinaryClassificationMetrics
 import numpy as np
+import json
+
 
 def get_df(data):
     return SparkSession.builder.getOrCreate().createDataFrame(data)
@@ -28,21 +30,26 @@ class ResultStats:
 
     def get_total_measures(self): return self.tp + self.tn + self.fp + self.fn
 
+    def div(self, numerator, denominator):
+        if denominator == 0:
+            return 0
+
+        return float(numerator) / denominator
+
     def get_accuracy(self):
-        return float(self.tp + self.tn) / self.get_total_measures() if self.tp + self.tn > 0 else 0
+        return self.div(self.tp + self.fn, self.get_total_measures())
 
     def get_precision(self):
-        return float(self.tp) / (self.tp + self.tn) if self.tp > 0 else 0
+        return self.div(self.tp, self.tp + self.fp)
 
     def get_recall(self):
-        return float(self.tp) / self.get_total_measures() if self.tp > 0 else 0
+        return self.div(self.tp, self.tp + self.fn)
 
     def get_specificity(self):
-        return float(self.tn) / self.get_total_measures() if self.tn > 0 else 0
+        return self.div(self.tn, self.tn+self.fp)
 
     def get_f1_score(self):
-        return 2 * float(self.get_recall() + self.get_precision()) / self.get_recall() + self.get_precision() \
-            if self.get_recall() + self.get_precision() > 0 else 0
+        return 2 * self.div(self.get_recall() * self.get_precision(), self.get_recall() + self.get_precision())
 
     def get_area_under_roc(self):
         return BinaryClassificationMetrics(get_df(self.results).rdd).areaUnderROC
@@ -55,23 +62,29 @@ class ResultStats:
     @staticmethod
     def print_numpy(np):
         return "[Accuracy: %f, Precision: %f, Recall: %f, Specificity: %f, F1: %f AuROC: %f]" % (
-        np[0], np[1], np[2], np[3], np[4], np[5])
+            np[0], np[1], np[2], np[3], np[4], np[5])
 
     def __str__(self):
-        return "[Label: %s][TP: %d TN: %d FP: %d FN: %d] [Accuracy: %f] [Precision: %f] [Recall: %f] [Specificity: %f] [F1 Score: %f]" % (
-        self.label, self.tp, self.tn, self.fp, self.fn, self.get_accuracy(), self.get_precision(), self.get_recall(),
-        self.get_specificity(), self.get_f1_score())
+        return "[%s][TP:%d TN:%d FP:%d FN:%d] [Acc: %f] [Prec: %f] [Recall: %f] [Specif: %f] [F1: %f] [AuROC:%f]" % (
+            self.label, self.tp, self.tn, self.fp, self.fn, self.get_accuracy(), self.get_precision(), self.get_recall(),
+            self.get_specificity(), self.get_f1_score(), self.get_area_under_roc())
+
+    def to_json(self):
+        return json.dumps({"accuracy": self.get_accuracy(), "precision": self.get_precision(), "recall": self.get_recall(),
+                           "specificity": self.get_specificity(), "f1_score": self.get_f1_score(), "AuROC": self.get_area_under_roc()})
+
 
 class SampleStats:
-	def __init__(self, data):
-		self.data = data
+    def __init__(self, data):
+        self.data = data
 
-	def std(self):
-		return np.std(np.array(self.data.map(lambda row: row.features.toArray()).collect()), axis=0)
+    def std(self):
+        return np.std(np.array(self.data.map(lambda row: row.features.toArray()).collect()), axis=0)
+
 
 def debug_samples(train, test):
-	_train = train.collect()
-	_test = test.collect()
-	return "[TEST sz: %d, pos: %d, neg: %d] [TRAIN sz: %d, pos: %d, neg: %d]" % \
-		( len(_test), len(filter(lambda lp: lp.label == 1.0, _test)), len(filter(lambda lp: lp.label == 0.0, _test)),
-			len(_train), len(filter(lambda lp: lp.label == 1.0, _train)), len(filter(lambda lp: lp.label == 0.0, _train)))
+    _train = train.collect()
+    _test = test.collect()
+    return "[TEST sz: %d, pos: %d, neg: %d] [TRAIN sz: %d, pos: %d, neg: %d]" % \
+           ( len(_test), len(filter(lambda lp: lp.label == 1.0, _test)), len(filter(lambda lp: lp.label == 0.0, _test)),
+             len(_train), len(filter(lambda lp: lp.label == 1.0, _train)), len(filter(lambda lp: lp.label == 0.0, _train)))
